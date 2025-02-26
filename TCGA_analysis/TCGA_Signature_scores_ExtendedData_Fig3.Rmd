@@ -1,0 +1,212 @@
+---
+title: "TCGA_Signature_scores_Fig2"
+output: html_document
+date: "2024-06-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages}
+library(ggplot2)
+library(ggpubr)
+library(readxl)
+library(dplyr)
+```
+
+```{r read_data}
+meta <- read_excel("Extended Data Table 1.xlsx")
+data <- read_excel("Extended Data Table 3.xlsx")
+data <- merge.data.frame(meta,data,by='Sample')
+data$YchrS_level <- factor(data$YchrS_level,levels=c('WTY_BR','LOY_BR'))
+```
+
+```{r Fig2A}
+paths <- c('TMB')
+data2 <- as.data.frame(matrix(nrow=0,ncol=3))
+colnames(data2) <- c('Scaled_Scores','Ychr_level','Pathway')
+for(pa in paths){
+  sub_data <- data[,c(pa,'YchrS_level')]
+  colnames(sub_data) <- c('Scaled_Scores','YchrS_level')
+  sub_data$Pathway <- pa
+  data2 <- rbind(data2,sub_data)
+}
+pdf('Fig2a_TCGA_barplot_TMB.pdf',2.8,2)
+p<-ggplot(data = data2, aes(x = Pathway, y = Scaled_Scores, fill = YchrS_level)) + 
+  geom_bar(stat='summary',fun='mean',position=position_dodge(),width=0.8,color='black')+
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',colour='black',width=0.15,position=position_dodge(.8))+
+  scale_fill_manual(values=c('#AEC7E8','#FF9896'))+
+  scale_y_continuous(expand = expansion(mult = 0))+theme_classic()+coord_cartesian(ylim=c(0,7))+
+  stat_compare_means(method="wilcox.test",paired=F,aes(group=YchrS_level,label='p.value'), label.y=0.25,tip.length=0.01,vjust=0,size=5)+
+  theme(axis.text.x = element_text(size=10))
+print(p)
+dev.off()
+```
+
+```{r Fig2A}
+paths <- c('Indel Neoantigens','SNV Neoantigens')
+data2 <- as.data.frame(matrix(nrow=0,ncol=3))
+colnames(data2) <- c('Scaled_Scores','Ychr_level','Pathway')
+for(pa in paths){
+  sub_data <- data[,c(pa,'YchrS_level')]
+  colnames(sub_data) <- c('Scaled_Scores','YchrS_level')
+  sub_data$Pathway <- pa
+  data2 <- rbind(data2,sub_data)
+}
+pdf('Fig2a_TCGA_barplot_Neoantigens.pdf',3.5,2)
+p<-ggplot(data = data2, aes(x = Pathway, y = Scaled_Scores, fill = YchrS_level)) + 
+  geom_bar(stat='summary',fun='mean',position=position_dodge(),width=0.8,color='black')+
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',colour='black',width=0.15,position=position_dodge(.8))+
+  scale_fill_manual(values=c('#AEC7E8','#FF9896'))+
+  scale_y_continuous(expand = expansion(mult = 0))+theme_classic()+coord_cartesian(ylim=c(0,100))+
+  stat_compare_means(method="wilcox.test",paired=F,aes(group=YchrS_level,label='p.value'), label.y=0.25,tip.length=0.01,vjust=0,size=5)+
+  theme(axis.text.x = element_text(size=10))
+print(p)
+dev.off()
+```
+
+```{r Fig2A}
+paths <- c('Silent Mutation Rate','Nonsilent Mutation Rate')
+data2 <- as.data.frame(matrix(nrow=0,ncol=3))
+colnames(data2) <- c('Scaled_Scores','Ychr_level','Pathway')
+for(pa in paths){
+  sub_data <- data[,c(pa,'YchrS_level')]
+  colnames(sub_data) <- c('Scaled_Scores','YchrS_level')
+  sub_data$Pathway <- pa
+  data2 <- rbind(data2,sub_data)
+}
+pdf('Fig2a_TCGA_barplot_Mutation_rate.pdf',3.5,2)
+p<-ggplot(data = data2, aes(x = Pathway, y = Scaled_Scores, fill = YchrS_level)) + 
+  geom_bar(stat='summary',fun='mean',position=position_dodge(),width=0.8,color='black')+
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',colour='black',width=0.15,position=position_dodge(.8))+
+  scale_fill_manual(values=c('#AEC7E8','#FF9896'))+
+  scale_y_continuous(expand = expansion(mult = 0))+theme_classic()+coord_cartesian(ylim=c(0,7))+
+  stat_compare_means(method="wilcox.test",paired=F,aes(group=YchrS_level,label='p.value'), label.y=0.25,tip.length=0.01,vjust=0,size=5)+
+  theme(axis.text.x = element_text(size=10))
+print(p)
+dev.off()
+```
+
+```{r Fig2b}
+paths <- c('Aneuploidy Score','Fraction Altered')
+cancertypes <- distinct(data, CancerType)$CancerType
+#Correlation Calculation
+data2 <- as.data.frame(matrix(nrow=0,ncol=4))
+colnames(data2) <- c('Correlation_Score','log10_P_value','Pathway','CancerType')
+for (pa in paths){
+  for(ca in cancertypes){
+    sub_data <- na.omit(data[data$CancerType==ca,c('YchrS',pa)])
+    if (nrow(sub_data)>2){
+      cor_test <- cor.test(sub_data$YchrS, sub_data[[pa]],use="complete.obs")
+      sub_res <- data.frame(
+        Correlation_Score = cor_test$estimate,
+        log10_P_value = -log10(cor_test$p.value),
+        Pathway = pa,
+        CancerType = ca
+      )
+      data2 <- rbind(data2,sub_res)
+    }
+  }
+}
+#ploting
+cmap <- list(
+  'PRAD' = '#682471','PCPG' = '#7954BB','THYM' = '#BEBADA','THCA' = '#C2A5CF','BRCA' = '#60636A',
+  'TGCT' = '#3288BD','SARC' = '#7390E3','LIHC' = '#96C5E2','LGG' = '#006837','LAML' = '#6CC08B',
+  'MESO' = '#B3DE69','DLBC' = '#C7EAE5','CHOL' = '#35978F','GBM' = '#3A7C89','ACC' = '#01665E',
+  'SKCM' = '#BF812D','BLCA' = '#DFC27D','PAAD' = '#FEF6B5','LUAD' = '#FEE08B','UVM' = '#FDB863',
+  'KIRC' = '#F7945D','COAD' = '#F46D43','HNSC' = '#F1B6DA','READ' = '#D01C8B','KICH' = '#E38191',
+  'LUSC' = '#CC607D','STAD' = '#B2182B','KIRP' = '#A5ACAF','ESCA' = '#2166AC'
+)
+for (pa in paths){
+  sub_data <- data2[data2$Pathway==pa,]
+  p <- ggplot(sub_data, aes(x = log10_P_value, y = Correlation_Score, color = CancerType)) +
+    geom_point(alpha = 0.9, size = 3) +
+    geom_hline(yintercept = 0, lty=2) +
+    geom_vline(xintercept = -log10(0.05), lty=2) +
+    scale_color_manual(values = cmap) + theme_bw() +
+    labs(title = paste("Correlation of Ychr score and", pa),
+         x = "-log10(P-value)",y = "Correlation Score",color = "Cancer Types") +
+    theme(legend.position = "bottom",
+          legend.title = element_blank(),
+          plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+          plot.subtitle = element_text(size = 12, hjust = 0.5),
+          axis.title.x = element_text(size = 12, face = "bold"),
+          axis.title.y = element_text(size = 12, face = "bold"),
+          axis.text.x = element_text(size = 10, face = "bold"),
+          axis.text.y = element_text(size = 10, face = "bold"),
+          legend.text = element_text(size = 8, face = "bold"))
+  
+  pdf(paste0("Fig2b_scatter_plot_", pa, ".pdf"),3,5)
+  print(p)
+  dev.off()
+}
+  
+```
+
+```{r Fig2e}
+paths <- c('HALLMARK_ANGIOGENESIS')
+data2 <- as.data.frame(matrix(nrow=0,ncol=3))
+colnames(data2) <- c('Scaled_Scores','YchrS_level','Pathway')
+for(pa in paths){
+  sub_data <- data[,c(pa,'YchrS_level')]
+  colnames(sub_data) <- c('Scaled_Scores','YchrS_level')
+  sub_data$Pathway <- pa
+  data2 <- rbind(data2,sub_data)
+}
+pdf('Fig2e_TCGA_barplot_angiogenesis.pdf',2.8,2)
+p<-ggplot(data = data2, aes(x = Pathway, y = Scaled_Scores, fill = YchrS_level)) + 
+  geom_bar(stat='summary',fun='mean',position=position_dodge(),width=0.8,color='black')+
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',colour='black',width=0.15,position=position_dodge(.8))+
+  scale_fill_manual(values=c('#AEC7E8','#FF9896'))+
+  scale_y_continuous(expand = expansion(mult = 0))+theme_classic()+coord_cartesian(ylim=c(-0.25,0.3))+
+  stat_compare_means(method="wilcox.test",paired=F,aes(group=YchrS_level,label='p.value'), label.y=0.25,tip.length=0.01,vjust=0,size=5)+
+  theme(axis.text.x = element_text(size=10))
+print(p)
+dev.off()
+```
+
+```{r Fig2f}
+paths <- c('HALLMARK_GLYCOLYSIS','HALLMARK_HYPOXIA')
+data2 <- as.data.frame(matrix(nrow=0,ncol=3))
+colnames(data2) <- c('Scaled_Scores','YchrS_level','Pathway')
+for(pa in paths){
+  sub_data <- data[,c(pa,'YchrS_level')]
+  colnames(sub_data) <- c('Scaled_Scores','YchrS_level')
+  sub_data$Pathway <- pa
+  data2 <- rbind(data2,sub_data)
+}
+pdf('Fig2f_TCGA_barplot_glycolysis_hypoxia.pdf',3.5,2)
+p<-ggplot(data = data2, aes(x = Pathway, y = Scaled_Scores, fill = YchrS_level)) + 
+  geom_bar(stat='summary',fun='mean',position=position_dodge(),width=0.8,color='black')+
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',colour='black',width=0.15,position=position_dodge(.8))+
+  scale_fill_manual(values=c('#AEC7E8','#FF9896'))+
+  scale_y_continuous(expand = expansion(mult = 0))+theme_classic()+coord_cartesian(ylim=c(-0.25,0.5))+
+  stat_compare_means(method="wilcox.test",paired=F,aes(group=YchrS_level,label='p.value'), label.y=0.25,tip.length=0.01,vjust=0,size=5)+
+  theme(axis.text.x = element_text(size=10))
+print(p)
+dev.off()
+```
+
+```{r Fig2g}
+paths <- c('HALLMARK_ANDROGEN_RESPONSE','HALLMARK_ESTROGEN_RESPONSE_EARLY','HALLMARK_ESTROGEN_RESPONSE_LATE')
+data2 <- as.data.frame(matrix(nrow=0,ncol=3))
+colnames(data2) <- c('Scaled_Scores','YchrS_level','Pathway')
+for(pa in paths){
+  sub_data <- data[,c(pa,'YchrS_level')]
+  colnames(sub_data) <- c('Scaled_Scores','YchrS_level')
+  sub_data$Pathway <- pa
+  data2 <- rbind(data2,sub_data)
+}
+pdf('Fig2g_TCGA_barplot_hormone_response.pdf',4,2)
+p<-ggplot(data = data2, aes(x = Pathway, y = Scaled_Scores, fill = YchrS_level)) + 
+  geom_bar(stat='summary',fun='mean',position=position_dodge(),width=0.8,color='black')+
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',colour='black',width=0.15,position=position_dodge(.8))+
+  scale_fill_manual(values=c('#AEC7E8','#FF9896'))+
+  scale_y_continuous(expand = expansion(mult = 0))+theme_classic()+coord_cartesian(ylim=c(-0.25,0.3))+
+  stat_compare_means(method="wilcox.test",paired=F,aes(group=YchrS_level,label='p.value'), label.y=0.25,tip.length=0.01,vjust=0,size=5)+
+  theme(axis.text.x = element_text(size=10))
+print(p)
+dev.off()
+print(p)
+```

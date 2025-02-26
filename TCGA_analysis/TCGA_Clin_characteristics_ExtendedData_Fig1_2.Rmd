@@ -1,0 +1,349 @@
+---
+title: "TCGA_Clin_characteristics_ExtendedData_Fig1_2"
+output: html_document
+date: "2024-06-17"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r pakages}
+library(ComplexHeatmap)
+library(readxl)
+library(RColorBrewer)
+library(clusterProfiler)
+library(circlize)
+library(maftools)
+library(rtracklayer)
+library(pROC)
+library(ggplot2)
+library(ggpubr)
+library(survival)
+library(survminer)
+library(DESeq2)
+library(pheatmap)
+library(DEGreport)
+library(apeglm)
+library(tidyverse)
+library(reshape2)
+library(reshape)
+```
+
+```{r ExtendedData Fig 1a}
+#Read Count Matrix
+Exprdata <- read.table('TCGA_cnt.csv',sep=',',header=T)
+Exprdata <- Exprdata[!is.na(Exprdata$sample),]
+Exprdata <- Exprdata[!duplicated(Exprdata$sample),]
+rownames(Exprdata) <- Exprdata$sample
+Exprdata <- Exprdata[,-1]
+colnames(Exprdata) <- substr(colnames(Exprdata),1,nchar(colnames(Exprdata))-3)
+Exprdata <- as.matrix(Exprdata)
+mode(Exprdata) <-'integer'
+```
+
+```{r ExtendedData Fig 1a}
+#Get groups
+sample_info = data.frame(read_excel('Extended Data Table 1.xlsx'))
+sample_info$Sample = gsub('-','.',sample_info$Sample)
+rownames(sample_info) = sample_info$Sample
+sample_info = sample_info[colnames(Exprdata),]
+Y_stat <- as.data.frame(sample_info$Y_status)
+colnames(Y_stat) <- 'Y_stat'
+rownames(Y_stat) <- sample_info$Sample
+Y_stat$Y_stat <- as.factor(Y_stat$Y_stat)
+```
+
+```{r ExtendedData Fig 1a}
+dds <- DESeqDataSetFromMatrix(countData=Exprdata,colData=Y_stat,design = ~ Y_stat)
+#Pre filtering
+keep <- rowSums(counts(dds)) >= 100
+dds <- dds[keep,]
+#Set reference
+dds$Y_stat <- relevel(dds$Y_stat, ref = 'WT')
+#DGE
+dds <- DESeq(dds)
+res <- results(dds,contrast = c('Y_stat','LOY','WT'))
+```
+
+```{r ExtendedData Fig 1a}
+results = as.data.frame(res)
+#Get chrY genelist
+Genemap = read.table('probeMap_gencode.v23.annotation.gene.probemap',header=T)
+Ychrgenes = Genemap[Genemap$chrom=='chrY','gene']
+results <- results[rownames(results) %in% Ychrgenes,]
+results <- na.omit(results)
+#Filter: p<=0.05, |LFC|>1
+results$Sig <- (results$padj <= 0.05) & (abs(results$log2FoldChange) > 1)
+#logP calculation
+pval_cut <-function(x){
+  return(min(x,300))
+}
+results$logp <- lapply(-log10(results$padj),pval_cut)
+results$logp <- as.double(results$logp)
+#color
+results$Col <- as.double(results$Sig)
+results[results$Sig==1,'Col'] <- results[results$Sig==1,'logp']
+results$Col <- as.double(results$Col)
+#Mark selected 9 genes
+genes = c('DDX3Y', 'UTY', 'KDM5D', 'USP9Y', 'ZFY', 'RPS4Y1', 'TMSB4Y', 'EIF1AY', 'NLGN4Y')
+results$s <- rownames(results) %in% genes
+results$s <- as.factor(results$s)
+label_set = results[rownames(results) %in% genes,]
+#volcano plot
+p<-ggplot(results,aes(x=log2FoldChange,y=logp, col=Col,shape=s)) + geom_point(size=0.5) + 
+  geom_hline(yintercept=-log10(0.05),lty=2)+
+  geom_vline(xintercept=c(-1,1),lty=2)+
+  geom_hline(yintercept=200,lty=2)+
+  scale_color_gradientn(colors =c("#5E4FA2","#3288BD","#66C2A5","#ABDDA4","#FEE08B", 
+                                  "#FDAE61","#F46D43", "#D53E4F", "#9E0142")) +
+  scale_shape_manual(values=c(16,17))+
+  geom_text(data=label_set,aes(label=rownames(label_set)),size=2) +
+  theme_classic()+
+  theme(axis.text.x = element_text(size=5),axis.text.y = element_text(size=5))
+dev.new()
+pdf('ExtendedData_Fig1a_TCGA_DGE_res_Ychrgenes.pdf',4,2.5)
+print(p)
+dev.off()
+```
+
+```{r ExtendedData Fig2b}
+data<-read_excel('Extended Data Table 1.xlsx')
+data$HBVorHCV <- ifelse(data$HBV=='Positive'|data$HCV=='Positive','Positive','Negative')
+data$HBVorHCV<-factor(data$HBVorHCV, levels = c('Negative','Positive'))
+data <- data[,c('YchrS','HBVorHCV')]
+data <- na.omit(data)
+my_com<-list(c('Negative','Positive')) 
+p <- ggplot(data,aes(x=HBVorHCV,y=YchrS,fill=HBVorHCV))+
+  geom_boxplot(position=position_dodge(),width=0.8,color='#60636A',notch=TRUE,outlier.size = 0.5)+
+  guides(fill=FALSE)+
+  geom_jitter(width = 0.3, size=0.1,alpha=0.5,col='#01665E')+
+  scale_fill_manual(values=c('#C7EAE5','#35978F'))+
+  stat_compare_means(comparisons=my_com,method="wilcox.test",paired=F,aes(label=..p.value),
+                     label.y=0.55, tip.length=0.01,vjust=0,size=2)+
+  scale_y_continuous(expand = expansion(mult = 0))+coord_cartesian(ylim=c(-0.2,0.62))+
+  theme_classic()
+pdf('ExtendedData_Fig2b_TCGA_boxplot_HBVorHCV_R_.pdf',2,2)
+print(p)
+dev.off()
+print(p)
+```
+
+```{r ExtendedData Fig2b}
+data<-read_excel('Extended Data Table 1.xlsx')
+data <- data[data$CancerType=='STAD',]
+data$HBV<-factor(data$HBV, levels = c('Negative','Positive'))
+data <- data[,c('YchrS','EBV')]
+data <- na.omit(data)
+my_com<-list(c('Negative','Positive')) 
+p <- ggplot(data,aes(x=EBV,y=YchrS,fill=EBV))+
+  geom_boxplot(position=position_dodge(),width=0.8,color='#60636A',notch=TRUE,outlier.size = 0.5)+
+  guides(fill=FALSE)+
+  geom_jitter(width = 0.3, size=0.1,alpha=0.5,col='#01665E')+
+  scale_fill_manual(values=c('#C7EAE5','#35978F'))+
+  stat_compare_means(comparisons=my_com,method="wilcox.test",paired=F,aes(label=..p.value),
+                     label.y=0.55, tip.length=0.01,vjust=0,size=2)+
+  scale_y_continuous(expand = expansion(mult = 0))+coord_cartesian(ylim=c(-0.2,0.62))+
+  theme_classic()
+pdf('ExtendedData_Fig2b_TCGA_boxplot_EBV.pdf',2,2)
+print(p)
+dev.off()
+print(p)
+```
+
+```{r ExtendedData Fig2e}
+data <- read_excel('Extended Data Table 1.xlsx')
+surv <- read.csv('ExtendedData_Table2_Survival.csv')
+data <- merge.data.frame(data, surv, by='Sample')
+
+Races <- c('ASIAN', 'BLACK OR AFRICAN AMERICAN', 'WHITE')
+dir.create('YchrS_race_sep')
+s='OS'
+for(race in Races){
+  sub_data <- data[data$Race == race,]
+  rt <- sub_data[, c(paste0(s,'.time'),s,'YchrS_level') ]
+  colnames(rt) <- c("Surv_TIME", "Surv_STATUS","risk")
+  rt <- na.omit(rt)
+  rt$Surv_TIME <- rt$Surv_TIME/365 #Transform to year
+  my.surv <- Surv(rt$Surv_TIME, rt$Surv_STATUS)
+  rt$risk <- factor(rt$risk, levels=c('WTY_BR','LOY_BR'))
+    
+  fit <- survfit(Surv(Surv_TIME, Surv_STATUS) ~ risk, data = rt)
+  res.cox <- coxph(Surv(Surv_TIME, Surv_STATUS) ~ risk, data = rt)
+  res.cox <- summary(res.cox)
+  p.val <- res.cox$coefficients[5]
+  HR <- res.cox$conf.int[1]
+  up95 <- res.cox$conf.int[4]
+  low95 <- res.cox$conf.int[3]
+  
+  HR <- paste("Hazard Ratio = ", round(HR, 2), sep = "")
+  CI <- paste("95% CI: ", paste(round(low95, 2), round(up95, 2), sep = " - "), sep = "")
+  p <- ggsurvplot(fit, data = rt, 
+                  pval = paste(s,ifelse(p.val < 0.0001, "P < 0.0001", paste("P = ", round(p.val, 4))), 
+                               HR, CI, sep = "\n"),
+                  pval.size = 4, pval.coord = c(0, 0.2),
+                  conf.int = FALSE,
+                  censor = TRUE,
+                  palette = c("#40548A","#DD492E"),
+                  font.legend = 16,
+                  risk.table = TRUE,
+                  legend = c(0.8, 0.9),
+                  font.title = 14,
+                  font.x = c(14, "bold.italic", "red"),
+                  font.y = c(14, "bold.italic", "red")
+  ) + labs(x = "Years",y=s) #Select units
+  
+  pdf(paste0("YchrS_race_sep/Extended_Data_Fig2_Y_status_Surv_",s,'_',race,'.pdf'), width = 5, height = 6, onefile=F)
+  print(p)
+  dev.off()
+  print(p)
+}
+
+```
+
+```{r}
+data <- read_excel('Extended Data Table 1.xlsx')
+surv <- read.csv('ExtendedData_Table2_Survival.csv')
+data <- merge.data.frame(data, surv, by='Sample')
+```
+
+```{r}
+Anc_list = c( "eas", "afr", "afr_admix", "eur")
+for(anc in Anc_list){
+   rt <- data[data['consensus_ancestry']==anc,c("OS","OS.time","YchrS_level")]
+ 
+   colnames(rt) <- c( "Surv_STATUS","Surv_TIME","risk")
+   rt <- na.omit(rt)
+   rt$Surv_TIME <- rt$Surv_TIME/365 #Transform to year
+   my.surv <- Surv(rt$Surv_TIME, rt$Surv_STATUS)
+   rt$risk <- factor(rt$risk, levels=c('WTY_BR','LOY_BR'))
+     
+   fit <- survfit(Surv(Surv_TIME, Surv_STATUS) ~ risk, data = rt)
+   res.cox <- coxph(Surv(Surv_TIME, Surv_STATUS) ~ risk, data = rt)
+   res.cox <- summary(res.cox)
+   p.val <- res.cox$coefficients[5]
+   HR <- res.cox$conf.int[1]
+   up95 <- res.cox$conf.int[4]
+   low95 <- res.cox$conf.int[3]
+   
+   HR <- paste("Hazard Ratio = ", round(HR, 2), sep = "")
+   CI <- paste("95% CI: ", paste(round(low95, 2), round(up95, 2), sep = " - "), sep = "")
+   p <- ggsurvplot(fit, data = rt, 
+                   pval = paste(anc,ifelse(p.val < 0.0001, "P < 0.0001", paste("P = ", round(p.val, 4))), 
+                                HR, CI, sep = "\n"),
+                   pval.size = 4, pval.coord = c(0, 0.2),
+                   conf.int = FALSE,
+                   censor = TRUE,
+                   palette = c("#40548A","#DD492E"),
+                   font.legend = 16,
+                   risk.table = TRUE,
+                   legend = c(0.8, 0.9),
+                   font.title = 14,
+                   font.x = c(14, "bold.italic", "red"),
+                   font.y = c(14, "bold.italic", "red")
+   ) + labs(x = "Time(Years)",y="Survival_Probability(OS)") #Select units
+   
+   pdf(paste0("ExtendedData_Fig2f_YchrS_level_Surv_OS_",anc,'.pdf'), width = 5, height = 6, onefile=F)
+   print(p)
+   dev.off()
+}
+```
+
+
+```{r Table11}
+data <- data[data$consensus_ancestry %in% Anc_list,]
+data$consensus_ancestry <- factor(data$consensus_ancestry,levels = c( "eas", "afr", "afr_admix", "eur"))
+data$YchrS_level <- factor(data$YchrS_level,levels = c("WTY_BR", "LOY_BR"))
+Cancertypes <- c( "LUSC", "ACC",  "BLCA", "BRCA", "CHOL", "COAD", "DLBC", "ESCA", "GBM",  "HNSC", "KICH", "KIRC", "KIRP", "LGG",  "LIHC", "LUAD",  "MESO", "PAAD", "PCPG", "PRAD", "READ", "SARC", "SKCM", "STAD", "TGCT", "THCA", "THYM", "UVM" )
+data$CancerType <- factor(data$CancerType,levels=Cancertypes)
+data2 <- data[data$Race!='AMERICAN INDIAN OR ALASKA NATIVE',]
+
+res.cox <- coxph(Surv(OS.time, OS)~YchrS_level+consensus_ancestry+Race+CancerType,data = data2)
+res.cox <- summary(res.cox)
+vars <-rownames(res.cox$coefficients)
+multicox <- data.frame(cbind(res.cox$coefficients[vars,],res.cox$conf.int[vars,c(1,3,4)]))
+colnames(multicox) <- c('coef','exp_coef','se_coef','z','P-val','HR','lower_95','upper_95')
+
+hrtable <- multicox[,c( "exp_coef", "P-val", "lower_95", "upper_95")]
+is_character <- sapply(hrtable, is.character)
+tabletext <- cbind(c("Signatures",rownames(hrtable)),
+                   c("p value",ifelse(round(as.numeric(hrtable$`P-val`),2) < 0.01,"<0.01",round(as.numeric(hrtable$'P-val'),2))),
+                   c("HR (95L-95H)",paste0(round(as.numeric(hrtable$'exp_coef'),2), " (",
+                                               round(as.numeric(hrtable$lower_95),2)," - ",
+                                               round(as.numeric(hrtable$upper_95),2),")")))
+write.csv(tabletext,"Tabls1_TCGA_consensus_ancestry_multivariate_coxPH_YchrS_level_race.csv")
+```
+
+
+```{r ExtendedData Fig2gh}
+data <- read_excel('Extended Data Table 1.xlsx')
+surv <- read.csv('ExtendedData_Table2_Survival.csv')
+data <- merge.data.frame(data, surv, by='Sample')
+genes = c('DDX3Y', 'UTY', 'KDM5D', 'USP9Y', 'ZFY', 'RPS4Y1', 'TMSB4Y', 'EIF1AY', 'NLGN4Y')
+load('Figure1b.RData')
+Yexpr <- data.frame(t(Exprdata[genes,]))
+Yexpr$Sample <- rownames(Yexpr)
+Yexpr$Sample <- gsub('\\.','-',Yexpr$Sample)
+data <- merge.data.frame(data, Yexpr, by='Sample')
+```
+
+```{r ExtendedData Fig2gh}
+surv_type <- c('OS','DSS')
+dir.create('Yexpr_surv')
+for(s in surv_type){
+  dir.create(paste0('Yexpr_surv/',s))
+  for(ygene in genes){
+    rt <- data[, c("Sample",paste0(s,'.time'),s,ygene) ]
+    colnames(rt) <- c("Sample","Surv_TIME", "Surv_STATUS",ygene)
+    rt <- na.omit(rt)
+    rt$Surv_TIME <- rt$Surv_TIME/365 #Transform to year
+    
+    my.surv <- Surv(rt$Surv_TIME, rt$Surv_STATUS)
+    
+    res.cut <- surv_cutpoint(rt, 
+                             time = "Surv_TIME", 
+                             event = "Surv_STATUS", 
+                             variables = ygene, 
+                             minprop = 0.3)
+    
+    categorize <- surv_categorize(res.cut)
+
+    rt$risk <- categorize[, 3]
+    rt$risk <- factor(rt$risk, levels=c('low','high'))
+    
+    fit <- survfit(Surv(Surv_TIME, Surv_STATUS) ~ risk, data = rt)
+    res.cox <- coxph(Surv(Surv_TIME, Surv_STATUS) ~ risk, data = rt)
+    res.cox <- summary(res.cox)
+    p.val <- res.cox$coefficients[5]
+    HR <- res.cox$conf.int[1]
+    up95 <- res.cox$conf.int[4]
+    low95 <- res.cox$conf.int[3]
+    
+    sdiff <- survdiff(Surv(Surv_TIME, Surv_STATUS) ~ risk, data = rt)
+    
+    HR <- paste("Hazard Ratio = ", round(HR, 2), sep = "")
+    CI <- paste("95% CI: ", paste(round(low95, 2), round(up95, 2), sep = " - "), sep = "")
+    p <- ggsurvplot(fit, data = rt, 
+                    pval = paste(s,ifelse(p.val < 0.0001, "P < 0.0001", paste("P = ", round(p.val, 4))), 
+                                 ygene, HR, CI, sep = "\n"),
+                    pval.size = 4, pval.coord = c(0, 0.2),
+                    conf.int = FALSE,
+                    censor = TRUE,
+                    palette = c("#40548A","#DD492E"),
+                    font.legend = 16,
+                    risk.table = TRUE,
+                    legend = c(0.8, 0.9),
+                    font.title = 14,
+                    font.x = c(14, "bold.italic", "red"),
+                    font.y = c(14, "bold.italic", "red")
+    ) + labs(x = "Years",y=s) #Select units
+    
+    pdf(paste0('Yexpr_surv/',s,"/Extended_Data_Fig2gh_",ygene,"_Surv_",s,'.pdf'), width = 5, height = 6, onefile=F)
+    print(p)
+    dev.off()
+    #print(p)
+  }
+  
+}
+```
+
