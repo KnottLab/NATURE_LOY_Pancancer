@@ -1,0 +1,193 @@
+---
+title: "GSEA_Figure3_6"
+output: html_document
+date: "2024-06-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r import_packages}
+library(org.Hs.eg.db)
+library(GseaVis)
+library(ComplexHeatmap)
+library(dplyr)
+library(clusterProfiler)
+library(ggplot2)
+library(RColorBrewer)
+library(circlize)
+library(tidyr)
+```
+
+```{r LOY_vs_WTY_Epithelial_Cell_GSEA_GO}
+cmp_pair = 'LOY_SCR_vs_WTY_SCR'
+genelist_mat <- read.csv("Extended_Data_Table_5_Epithelium_LOYvsWTY_DGE.csv")
+
+genelist<-genelist_mat[,c('LOY_SCR_names',"LOY_SCR_scores")]
+colnames(genelist)<-c("SYMBOL","Scores")
+
+gene <- genelist$SYMBOL
+## Transform into ENTREZID ID
+gene = bitr(gene, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db",)
+## Remove Duplication
+genelist <- dplyr::distinct(genelist,SYMBOL,.keep_all=TRUE)
+## Combine
+genelist <- merge.data.frame(gene,genelist,by='SYMBOL')
+genelist <- na.omit(genelist)
+genelist <- genelist[genelist$Scores!=0,]
+geneinput <- genelist$Scores
+names(geneinput) <-genelist$ENTREZID
+## Sort by Scores
+geneinput <- sort(geneinput, decreasing = T)
+## Remove duplicates 
+geneinput <- geneinput[!duplicated(names(geneinput))]
+##GSEA
+go2 <-gseGO(geneList     = geneinput,
+             OrgDb        = "org.Hs.eg.db",
+             ont          = "ALL",
+             minGSSize    = 20,
+             maxGSSize    = 500,
+             pvalueCutoff = 1,
+             verbose      = FALSE)
+go2 <- setReadable(go2,
+                    OrgDb = "org.Hs.eg.db",
+                    keyType = "ENTREZID")
+ ## Transform into gene name
+go3 <-as.data.frame(DOSE::setReadable(go2,OrgDb = "org.Hs.eg.db",keyType = "ENTREZID"))%>%
+    arrange(desc(NES))
+## Save result
+file <- paste0('scRNAseq_',cmp_pair,'_Epithelial_cell_gseGO_2.csv')
+write.csv(go3,file)
+```
+
+```{r LOY_vs_WTY_non-Epithlial_GSEA_GO}
+cmp_pair = 'LOY_SCR_vs_WTY_SCR'
+genelist_mat <- read.csv("ExtendedData_Table9_DGE.csv")
+Celltypes = c('B_cell', 'CD4._T_cell', 'CD8._T_cell',	'Dendritic_cell', 'Endothelium',  'Fibroblast', 'ILC', 'MAIT', 'Macrophage', 'Mast_cell', 'Monocyte',	'NK_cell',	'Plasma_cell', 'pDC')
+
+dir = paste0('GSEA_GO_nonEpi_',cmp_pair,'_GO')
+dir.create(dir)
+
+for(ct in Celltypes){
+  genelist<-genelist_mat[,c(paste0(ct,'_LOY_SCR_names'),paste0(ct,"_LOY_SCR_logfoldchanges"))]
+  colnames(genelist)<-c("SYMBOL","logFC")
+  
+  gene <- genelist$SYMBOL
+  ## Transform into ENTREZID ID
+  gene = bitr(gene, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db",)
+  ## Remove Duplication
+  genelist <- dplyr::distinct(genelist,SYMBOL,.keep_all=TRUE)
+  ## Combine
+  genelist <- merge.data.frame(gene,genelist,by='SYMBOL')
+  genelist <- na.omit(genelist)
+  genelist <- genelist[genelist$logFC!=0,]
+  geneinput <- genelist$logFC
+  names(geneinput) <-genelist$ENTREZID
+  ## Sort by logFC
+  geneinput <- sort(geneinput, decreasing = T)
+  ## Remove duplicates 
+  geneinput <- geneinput[!duplicated(names(geneinput))]
+  ##GSEA
+  go2 <-gseGO(geneList     = geneinput,
+              OrgDb        = "org.Hs.eg.db",
+              ont          = "ALL",
+              minGSSize    = 20,
+              maxGSSize    = 500,
+              pvalueCutoff = 1,
+              verbose      = FALSE)
+  go2 <- setReadable(go2,
+                     OrgDb = "org.Hs.eg.db",
+                     keyType = "ENTREZID")
+  ## Transform into gene name
+  go3 <-as.data.frame(DOSE::setReadable(go2,OrgDb = "org.Hs.eg.db",keyType = "ENTREZID"))%>%
+    arrange(desc(NES))
+  ## Save result
+  file <- paste0('scRNAseq_',cmp_pair,'_',ct,'_gseGO.csv')
+  write.csv(go3,paste0(dir,'/',file))
+}
+```
+
+```{r functions_for_heatmap}
+draw_heatmap <- function(ml,vrange, plt_title,save_file, w, h){
+  col_fun <- colorRamp2(c(-vrange,0,vrange),c("#009ac6","#f2f2f1","#f15e4c"))
+  ht <- Heatmap(as.matrix(ml),
+                col=col_fun, show_row_names = FALSE,
+                na_col = 'white',
+                column_title = plt_title,
+                cluster_rows = TRUE, column_dend_reorder = seq(1,ncol(ml)),
+               use_raster = TRUE,column_names_gp = grid::gpar(fontsize = 10)
+  )
+  pdf(save_file,w,h)
+  draw(ht)
+  dev.off()
+}
+get_GSEA_df <- function(dir,celltypes,preffix,suffix,pcut){
+  ml <- as.data.frame(matrix(nrow=0,ncol=1))
+  pval <- as.data.frame(matrix(nrow=0,ncol=1))
+  colnames(ml)=c('Description')
+  colnames(pval)=c('Description')
+  for(ct in celltypes){
+    
+    GSEAres <- read.csv(paste0(dir,'/',preffix,ct,suffix)) 
+    sub_res <- GSEAres[,c('Description','NES')]
+    colnames(sub_res) <- c('Description',ct)
+    ml <- merge(ml,sub_res,by='Description',all.x=T,all.y=T)
+    
+    sub_res <- GSEAres[,c('Description','p.adjust')]#
+    colnames(sub_res) <- c('Description',ct)
+    pval <- merge(pval,sub_res,by='Description',all.x=T,all.y=T)
+  }
+  pval[is.na(pval)] <- 1
+  minp <- apply(pval[,celltypes],1,FUN=min)
+  maxNES <- apply(abs(ml[,celltypes]),1,FUN=max)
+  #print(minp)
+  des <- pval[minp<0.05,'Description']
+  return(ml[ml$Description %in% des,])
+}
+```
+
+```{r}
+get_GSEA_summary <- function(dir,celltypes,preffix,suffix){
+  summ <- as.data.frame(matrix(nrow=0,ncol=1))
+  colnames(summ)=c('Direction')
+  for(ct in Celltypes){
+    GSEAres <- read.csv(paste0(dir,'/',preffix,ct,suffix)) 
+    sub_res <- GSEAres[,c('Description','NES','p.adjust')]
+    #colnames(sub_res) <- c('Description','NES)
+    sub_res$Sig <- sub_res$p.adjust<0.05
+    sub_res$Dir <- ifelse(sub_res$NES>0,'UP','DOWN')
+    sub_res$Dir <- factor(sub_res$Dir,levels=c('UP','DOWN'))
+    sub_res <- sub_res[sub_res$Sig,]
+    
+    sub_summ <-data.frame(table(sub_res$Dir))
+    colnames(sub_summ) <- c('Direction',ct)
+    summ <- merge(summ,sub_summ,by='Direction',all.x=T,all.y=T)
+  }
+  summ <- gather(summ,key="Celltype",-"Direction",value="Count",factor_key = FALSE)
+  return(summ)
+}
+```
+
+```{r Fig5d}
+cmp_pair = 'LOY_SCR_vs_WTY_SCR'
+dir= paste0('GSEA_GO_nonEpi_',cmp_pair,'_GO')
+preffix=paste0('scRNAseq_',cmp_pair,'_')
+suffix='_gseGO.csv'
+pcut=0.05
+Celltypes = c('B_cell', 'CD4._T_cell', 'CD8._T_cell',	'Dendritic_cell', 'Endothelium',  'Fibroblast', 'ILC', 'MAIT', 'Macrophage', 'Mast_cell', 'Monocyte',	'NK_cell',	'Plasma_cell', 'pDC')
+ml1 <- get_GSEA_df(dir,Celltypes,preffix,suffix,pcut)
+write.csv(ml1,paste0('GSEA_heatmap_nonEpi_',cmp_pair,'_gseGO.csv'))
+rownames(ml1) <- ml1$Description
+ml1 <- ml1[,-1]
+
+path_annot <- c()
+vrange<-2.5
+plt_title <- paste0(cmp_pair,'_GO')
+save_file <- paste0('GSEA_heatmap_nonEpi_',cmp_pair,'_GO.pdf')
+w <- 4
+h <- 6
+annot_size <- 10
+
+draw_heatmap(ml1,vrange, plt_title,save_file, w, h)
+```
