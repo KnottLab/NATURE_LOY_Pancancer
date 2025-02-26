@@ -1,0 +1,462 @@
+---
+title: "MB49_CRISPR_LOY"
+output: html_document
+date: "2025-02-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(tidyr)
+library(stringr)
+library(plyr)
+library(dplyr)
+library(tidyverse)
+library(GSVA)
+library('readxl')
+library(scales)
+library(DESeq2)
+library(pheatmap)
+library(DEGreport)
+library(apeglm)
+library(tidyverse)
+```
+
+```{r DGE and GSEA Fig3j}
+#RP: Y_KO; RC: Y_Scr
+#load data
+data <- read_excel('CRISPR_in_vitro_count.xlsx')
+data <- data[,c("gene_name","RP_1_count", "RP_2_count","RP_3_count","RC_1_count","RC_2_count","RC_3_count" )]
+data<-data.frame(data)
+data = data[!duplicated(data$gene_name),]
+rownames(data) <- data$gene_name
+data <- data[,-1]
+
+#Set groups
+Sample <- colnames(data)
+Group <- c(rep("Y_KO",3), rep("Y_scr",3))
+Group_info <- data.frame(Sample,Group)
+rownames(Group_info) <- Sample
+data<-data[,rownames(Group_info)]
+
+#DESeq2
+dds <- DESeqDataSetFromMatrix(countData=data,colData=Group_info,design = ~ Group) 
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds$Group <- relevel(dds$Group, ref = 'Y_scr')
+dds <- DESeq(dds)
+res <- results(dds,contrast = c('Group','Y_KO','Y_scr'))
+resultsNames(dds)
+
+resLFC <- lfcShrink(dds, coef="Group_Y_KO_vs_Y_scr", type='apeglm')
+write.table(as.data.frame(resLFC),file='CRISPR_DGE.txt')
+
+#GSEA
+genelist_input <- read.table('CRISPR_DGE.txt')
+genelist_input$X <- rownames(genelist_input)
+genelist<-genelist_input[,c('X',"log2FoldChange")]
+colnames(genelist)<-c("SYMBOL","logFC")
+#Gene name transformation
+gene <- genelist$SYMBOL
+gene = bitr(gene, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Mm.eg.db")
+genelist <- dplyr::distinct(genelist,SYMBOL,.keep_all=TRUE)
+genelist <- merge.data.frame(gene,genelist,by='SYMBOL')
+genelist <- na.omit(genelist)
+geneinput <- genelist$logFC
+names(geneinput) <-genelist$ENTREZID
+#Sort and remove duplicates
+geneinput <- sort(geneinput, decreasing = T)
+geneinput <- geneinput[!duplicated(names(geneinput))]
+
+go2 <-gseGO(geneList     = geneinput,
+            OrgDb        = "org.Mm.eg.db",
+            ont          = "BP",#ALL
+            minGSSize    = 20,
+            maxGSSize    = 500,
+            pvalueCutoff = 1,
+            verbose      = FALSE)
+
+go2 <- setReadable(go2,
+                   OrgDb = "org.Mm.eg.db",
+                   keyType = "ENTREZID")
+
+pathwayid <- c('GO:0006302','GO:0002474','GO:0090068','GO:0000724')
+for (id in pathwayid){
+    p <- gseaNb(object = go2,geneSetID = id,addPval = TRUE,kegg = TRUE,markTopgene = TRUE,subPlot = 2,pCol = 'black')
+    pdf_filename <- paste0(id, "_",file_preffix,"_Gsea_GO.pdf")
+    ggsave(filename = pdf_filename, plot = p, width = 3.5, height = 3)
+}
+```
+
+```{r load_data}
+genelist <- list(
+  'Antigen_Presentation' = c("H2-D1", 'B2m', 'Cd74'),
+  'Cell_cycle' = c("Cdk2","Ccna2","Ccnb1", "Ccnd1", "Mki67"),
+  'Genomic_instability'=c("Brca1","Atm","Msh2","Tert",'Tsc2', 'Apc', 'Pten', "Bub1b","Aurkb","Cenpe","Plk1")
+)
+data<-read.csv("CRISPR_in_vitro_normalized_Expr.txt",sep='\t')
+data2<-gather(data,key="samples",-"gene_name",value="geneexpression",factor_key = FALSE)
+data2$Group<-substring(data2$samples,1,2)
+data2$Group<-str_replace(data2$Group, "RP","Y_KO")
+data2$Group<-str_replace(data2$Group, "RC","Y_scr")
+data2$Group <- factor(data2$Group,levels=c('Y_scr','Y_KO'))
+```
+
+```{r Fig3k Cell cycle}
+cat <- 'Cell_cycle'
+inputdata <- data2[data2$gene_name %in% genelist[[cat]],]
+inputdata$gene_name <- factor(inputdata$gene_name, levels = genelist[[cat]])
+  
+p<-ggplot(inputdata,aes(x=gene_name,y=geneexpression,color=Group,fill=Group))+
+  geom_bar(stat='summary',fun='mean',position=position_dodge(.9),width=0.9)+
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',width=0.15,position=position_dodge(.9))+
+  geom_jitter(size=0.5,position=position_jitterdodge(dodge.width = 0.9,jitter.width = .3),aes(color=Group))+
+  scale_fill_manual(values=c(Y_KO = '#fc9696',Y_scr = '#bdd7ec'))+
+  scale_color_manual(values = c(Y_KO = "#c11c1d", Y_scr = "#195697"))+guides(color='none', fill='none')+
+  stat_compare_means(method="t.test",paired=F,aes(group=Group, label='p.value'), tip.length=0.01,vjust=0.2,size=3)+
+  scale_y_continuous(expand = expansion(mult = 0)) +
+  labs(y = "Gene Expression", title = cat)+
+  theme_classic()+
+  theme(plot.title = element_text(size=7,hjust = 0.5),axis.text.x = element_text(vjust=1,size=7))
+
+pdf(paste0( cat, "_barplot_scaled.pdf"), width = length(genelist[[cat]])/2+1, height = 2)  
+print(p)
+dev.off()
+```
+
+```{r Fig3k Antigen representation}
+cat = 'Antigen_Presentation'
+inputdata <- data2[data2$gene_name %in% genelist[[cat]],]
+inputdata$gene_name <- factor(inputdata$gene_name, levels = genelist[[cat]])
+
+p<-ggplot(inputdata,aes(x=gene_name,y=geneexpression,color=Group,fill=Group))+
+  geom_bar(stat='summary',fun='mean',position=position_dodge(.9),width=0.9)+
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',width=0.15,position=position_dodge(.9))+
+  geom_jitter(size=0.5,position=position_jitterdodge(dodge.width = 0.9,jitter.width = .3),aes(color=Group))+
+  scale_fill_manual(values=c(Y_KO = '#fc9696',Y_scr = '#bdd7ec'))+
+  scale_color_manual(values = c(Y_KO = "#c11c1d", Y_scr = "#195697"))+guides(color='none', fill='none')+
+  stat_compare_means(method="t.test",paired=F,aes(group=Group, label='p.value'), tip.length=0.01,vjust=0.2,size=3)+
+  scale_y_continuous(expand = expansion(mult = 0)) +
+  labs(y = "Gene Expression", title = cat)+
+  coord_cartesian(ylim=c(0,750))+
+  theme_classic()+
+  theme(plot.title = element_text(size=7,hjust = 0.5),axis.text.x = element_text(vjust=1,size=7))
+
+pdf(paste0(cat, "_barplot_scaled_truncated1.pdf"), length(genelist[[cat]])/2+0.93, height = 1.2)
+print(p)
+dev.off()
+
+p<-ggplot(inputdata,aes(x=gene_name,y=geneexpression,color=Group,fill=Group))+
+  geom_bar(stat='summary',fun='mean',position=position_dodge(.9),width=0.9)+#,color='black'
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',width=0.15,position=position_dodge(.9))+#,colour='black'
+  geom_jitter(size=0.5,position=position_jitterdodge(dodge.width = 0.9,jitter.width = .3),aes(color=Group))+
+  scale_fill_manual(values=c(Y_KO = '#fc9696',Y_scr = '#bdd7ec'))+
+  scale_color_manual(values = c(Y_KO = "#c11c1d", Y_scr = "#195697"))+guides(color='none', fill='none')+
+  stat_compare_means(method="t.test",paired=F,aes(group=Group, label='p.value'), tip.length=0.01,vjust=0.2,size=3)+#, label.y=0
+  scale_y_continuous(expand = expansion(mult = 0)) +
+  labs(y = "Gene Expression", title = cat)+
+  coord_cartesian(ylim=c(4000, 16000))+
+  theme_classic()+
+  theme(plot.title = element_text(size=7,hjust = 0.5),axis.line.x = element_line(colour="white"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.title.x = element_blank())
+
+pdf(paste0( cat, "_barplot_scaled_truncated2.pdf"), width = length(genelist[[cat]])/2+1, height = 1.1) 
+print(p)
+dev.off()
+```
+
+```{r Fig3k Genomic instability}
+cat = 'Genomic_instability'
+inputdata <- data2[data2$gene_name %in% genelist[[cat]],]
+inputdata$gene_name <- factor(inputdata$gene_name, levels = genelist[[cat]])
+
+p<-ggplot(inputdata,aes(x=gene_name,y=geneexpression,color=Group,fill=Group))+
+  geom_bar(stat='summary',fun='mean',position=position_dodge(.9),width=0.9)+
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',width=0.15,position=position_dodge(.9))+
+  geom_jitter(size=0.5,position=position_jitterdodge(dodge.width = 0.9,jitter.width = .3),aes(color=Group))+
+  scale_fill_manual(values=c(Y_KO = '#fc9696',Y_scr = '#bdd7ec'))+
+  scale_color_manual(values = c(Y_KO = "#c11c1d", Y_scr = "#195697"))+guides(color='none', fill='none')+
+  stat_compare_means(method="t.test",paired=F,aes(group=Group, label='p.value'), tip.length=0.01,vjust=0.2,size=3)+
+  scale_y_continuous(expand = expansion(mult = 0)) +
+  labs(y = "Gene Expression", title = cat)+
+  coord_cartesian(ylim=c(0,130))+
+  theme_classic()+
+  theme(plot.title = element_text(size=7,hjust = 0.5),axis.text.x = element_text(vjust=1,size=7))
+
+pdf(paste0(cat, "_barplot_scaled_truncated1.pdf"), width = length(genelist[[cat]])/2+0.93, height = 1.1) 
+print(p)
+dev.off()
+
+p<-ggplot(inputdata,aes(x=gene_name,y=geneexpression,color=Group,fill=Group))+
+  geom_bar(stat='summary',fun='mean',position=position_dodge(.9),width=0.9)+
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',width=0.15,position=position_dodge(.9))+
+  geom_jitter(size=0.5,position=position_jitterdodge(dodge.width = 0.9,jitter.width = .3),aes(color=Group))+
+  scale_fill_manual(values=c(Y_KO = '#fc9696',Y_scr = '#bdd7ec'))+
+  scale_color_manual(values = c(Y_KO = "#c11c1d", Y_scr = "#195697"))+guides(color='none', fill='none')+
+  stat_compare_means(method="t.test",paired=F,aes(group=Group, label='p.value'), tip.length=0.01,vjust=0.2,size=3)+
+  scale_y_continuous(expand = expansion(mult = 0)) +
+  labs(y = "Gene Expression", title = cat)+
+  coord_cartesian(ylim=c(400, 3000))+
+  theme_classic()+
+  theme(plot.title = element_text(size=7,hjust = 0.5),axis.line.x = element_line(colour="white"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.title.x = element_blank())
+
+pdf(paste0(cat, "_barplot_scaled_truncated2.pdf"), width = length(genelist[[cat]])/2+1, height = 1.2)
+print(p)
+dev.off()
+```
+
+```{r DGE of CD45- compartment from CRISPR tumors}
+Exprdata <- read.csv('CD45-_RNAseq_count_gene_symbol.csv')
+Exprdata <- Exprdata[!is.na(Exprdata$Geneid),]
+Exprdata <- Exprdata[!duplicated(Exprdata$Geneid),]
+rownames(Exprdata) <- Exprdata$Geneid
+Exprdata <- Exprdata[,-1]
+Samples <- c('MB_49YKO_1N',  'MB_49YKO_2N',  'MB_49YKO_3N',  'MB_49YSCR_1N', 'MB_49YSCR_2N', 'MB_49YSCR_3N')
+Exprdata_tum<-Exprdata[,c(Samples)]
+Exprdata_tum <- as.matrix(Exprdata_tum)
+mode(Exprdata_tum) <-'integer'
+
+LOY_stat <- as.data.frame(list(Y_status=c(rep('YKO',3),rep('YSCR',3))))
+rownames(LOY_stat) <- colnames(Exprdata_tum)
+LOY_stat$Y_status <- as.factor(LOY_stat$Y_status)
+
+dds <- DESeqDataSetFromMatrix(countData=Exprdata_tum,colData=LOY_stat,design = ~ Y_status)
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds$Y_status <- relevel(dds$Y_status, ref = 'YSCR')
+dds <- DESeq(dds)
+res <- results(dds,contraswritet = c('Y_status','YKO','YSCR'))
+
+data <- lfcShrink(dds, coef="Y_status_YKO_vs_YSCR", type='apeglm')
+
+#Filter out Y genes
+genes = Exprdata[substr(genes$Chr,1,1)=='Y',]
+data <- data[!(rownames(data) %in% genes$Geneid),]
+write.table(data,file='ExtededData_Table6_CRISPR_in_vivo_DGE.txt')
+```
+
+```{r Signature gene selection}
+gene_map <- read.table('/Users/sheny2/Downloads/CDH12/C3_Mouse_Seq_data/human_mouse.txt',sep='\t',header=T)
+data <- read.table('ExtededData_Table6_CRISPR_in_vivo_DGE.txt')
+data <- na.omit(data)
+Siglist <- list()
+data <- data[order(data$log2FoldChange),]#low->high
+num <- 40
+
+#Select top up regulated genes
+siggene = data[(data$log2FoldChange>2) & (data$padj<0.05),]
+## Transform to human gene
+submap = gene_map[gene_map$Mouse_name %in% rownames(siggene),]
+submap = submap[!duplicated(submap$Mouse_name),]
+rownames(submap) = submap$Mouse_name
+siggene$human_gene = submap[rownames(siggene),'Gene_name']
+siggene = na.omit(siggene)
+siggene = siggene[siggene$human_gene!='',]
+siggene = siggene[seq(max(1, nrow(siggene)-num+1),nrow(siggene)),]
+
+sub_list = list(elem = na.omit(siggene$human_gene))
+names(sub_list) = paste0('in_vivo_UP_top',num)
+Siglist = append(Siglist, sub_list)
+
+#Select top down regulated genes
+siggene = data[(data$log2FoldChange<(-2)) & (data$padj<0.05),]
+## Transform to human gene
+submap = gene_map[gene_map$Mouse_name %in% rownames(siggene),]
+submap = submap[!duplicated(submap$Mouse_name),]
+rownames(submap) = submap$Mouse_name
+siggene$human_gene = submap[rownames(siggene),'Gene_name']
+siggene = na.omit(siggene)
+siggene = siggene[siggene$human_gene!='',]
+
+siggene = siggene[seq(1,min(nrow(siggene), num)),]
+
+sub_list = list(elem = na.omit(siggene$human_gene))
+names(sub_list) = paste0('in_vivo_DOWN_top',num)
+Siglist = append(Siglist, sub_list)
+```
+
+
+```{r Signature calculation}
+expr_LOY <- read.table('expr_LOY_allgenes_FPKM.txt')
+gsvaPar <- gsvaParam(as.matrix(Expr_TCGA), Siglist)
+tcga_gsva2 <- gsva(gsvaPar)
+tcga_gsva2 <- as.data.frame(t(tcga_gsva2))
+tcga_gsva2$Sample <- substr(rownames(tcga_gsva2),1,nchar(rownames(tcga_gsva2))-3)
+colnames(tcga_gsva2) <- c(names(Siglist), 'Sample')
+```
+
+```{r combine with meta data}
+meta <- read_excel('Extended Data Table 1.xlsx')
+data <- merge.data.frame(meta, tcga_gsva2, by = "Sample")
+```
+
+```{r calculated signature ratio}
+CTs = data$CancerType[!duplicated(data$CancerType)]
+Sigs = names(Siglist)
+
+scaled <- data[,Sigs]
+scaled <- data.frame(apply(scaled,2, rescale))
+scaled <- scaled+0.01
+scaled <- data.frame(scaled[,"in_vivo_UP_top40"]/scaled[,"in_vivo_DOWN_top40"])
+colnames(scaled) <- c("in_vivo_UP_top40.DOWN")
+scaled$Sample <- data$Sample
+scaled$YchrS_level <- data$YchrS_level
+scaled$CancerType <- data$CancerType
+```
+
+```{r ExtendedData Fig6b}
+sig <- "in_vivo_UP_top40.DOWN"
+sub_data <- scaled[, c('YchrS_level','CancerType',sig)]
+colnames(sub_data) <- c('YchrS_level','CancerType','Score')
+sub_data$YchrS_level <- factor(sub_data$YchrS_level, levels=c('WTY_BR','LOY_BR'))
+sub_data$Score <- log(sub_data$Score,base=2)
+
+p<-ggplot(sub_data[sub_data$CancerType=='BLCA',],aes(x=YchrS_level,y=Score,color=YchrS_level, fill= YchrS_level))+
+  geom_bar(stat='summary',fun='mean',position=position_dodge(.9),width=0.8,color='#60636A')+
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',width=0.15,position=position_dodge(.9),colour='#60636A')+
+  scale_fill_manual(values=c('WTY_BR'='#bdd7ec','LOY_BR'='#fc9696'))+
+  scale_color_manual(values = c('WTY_BR'='#7397E4','LOY_BR'='#ED665D'))+ 
+  stat_compare_means(method="wilcox.test",paired=F,aes(group=YchrS_level,label='p.value'), tip.length=0.01,vjust=0.2,size=3,label.y=0.85)+
+  scale_y_continuous(expand = expansion(mult = 0)) + labs(x = "", y=('log Score Ratio (Y-KO/Y-Scr)'))+
+  coord_cartesian(ylim=c(0,0.9))+
+  theme_classic()+theme(plot.title = element_text(size=7,hjust = 0.5),axis.text.x = element_text(vjust=0.3,size=10))
+
+pdf(paste0(sig,"_RATE_Scores_BLCA.pdf"), width =3.5, height = 2.8)
+print(p)
+dev.off()
+```
+
+```{r ExtendedData Fig6c}
+sig <- "in_vivo_UP_top40.DOWN"
+sub_data <- scaled[, c('YchrS_level','CancerType',sig)]
+colnames(sub_data) <- c('YchrS_level','CancerType','Score')
+sub_data$YchrS_level<-factor(sub_data$YchrS_level, levels = c('WTY_BR', 'LOY_BR'))
+sub_data$Score <- log(sub_data$Score,base=2)
+p<-ggplot(sub_data[sub_data$CancerType!='BRCA',],aes(x=CancerType,y=Score,color=YchrS_level, fill= YchrS_level))+
+  geom_bar(stat='summary',fun='mean',position=position_dodge(.9),width=0.9,color='#60636A')+
+  stat_summary(fun.data = 'mean_se',geom = 'errorbar',width=0.15,position=position_dodge(.9),colour='#60636A')+
+  scale_fill_manual(values=c('WTY_BR'='#bdd7ec','LOY_BR'='#fc9696'))+
+  scale_color_manual(values = c('WTY_BR'='#7397E4','LOY_BR'='#ED665D'))+ 
+  stat_compare_means(method="wilcox.test",paired=F,aes(group=YchrS_level,label='p.value'), tip.length=0.01,vjust=0.2,size=3,label.y=1.5, angle=90)+
+  scale_y_continuous(expand = expansion(mult = 0)) + labs(x = "", y=('log Score Ratio (Y-KO/Y-Scr)'))+
+  coord_cartesian(ylim=c(-1.1,2))+
+  theme_classic()+theme(plot.title = element_text(size=7,hjust = 0.5),axis.text.x = element_text(vjust=0.3,size=10,angle=90))
+
+pdf(paste0(sig, "_RATE_Scores_per_cancer.pdf"), width =10, height = 4) 
+print(p)
+dev.off()
+```
+
+```{r WES_Indel ExtendedData Fig6g}
+Indel <- read.table('CRISPR_LOY_indel_function.stat.xls', sep='\t', header=T)
+rownames(Indel) <- Indel$Sample
+Indel <- data.frame(t(Indel[,-1]))
+Indel <- Indel[,-20] #Remove column for total number
+Indel$Sample <- rownames(Indel)
+Other <- colnames(Indel)
+Other <- Other[! (Other %in% c('CDS','intronic','intergenic','Sample'))]
+Indel$other <- apply(Indel[,Other],1,sum)
+
+Indel2 <- gather(Indel, key = 'Indel', value = 'Count', -Sample)
+Indel2 = Indel2[Indel2$Indel %in% c('CDS','intronic','intergenic','other'),]
+
+Sort <- Indel2[Indel2$Sample=='MB49LOY',]
+Sort <- Sort[order(Sort$Count),'Indel']
+
+Indel2 <- Indel2[Indel2$Sample %in% c('MB49R_C','MB49LOY'),]
+Indel2$Indel <- factor(Indel2$Indel,levels=Sort)
+Indel2$Sample <- factor(Indel2$Sample, levels=c('MB49R_C','MB49LOY'))
+
+colors <-c( '#C2A5CF','#96C5E2', '#BAE4BC','#FEE08B')
+p<-ggplot(Indel2[Indel2$Sample %in% c('MB49R_C','MB49LOY'),], aes(fill=Indel, y=Count, x=Sample, color=Indel)) + 
+    geom_bar(position="stack", stat="identity",width=0.6,linewidth=0.75)+guides(fill = guide_legend(ncol = 1))+
+    scale_y_continuous(expand = expansion(mult = 0)) +
+    scale_fill_manual(values=colors)+#labs(title=test_res$p.value)+
+    coord_cartesian(ylim=c(0,9500))+
+    scale_color_manual(values=c('#9467BD','#2B8CBE','#5C8D84','#BF812D'))+
+    theme_classic()
+pdf(paste0("ExtendedData_Fig6g_Indel_summary_stacked_bar.pdf"), width = 3, height = 2.5)
+print(p)
+dev.off()
+```
+
+```{r}
+Indel <- read.table('CRISPR_LOY_snp_function.stat.xls', sep='\t', header=T)
+rownames(Indel) <- Indel$Sample
+Indel <- data.frame(t(Indel[,-1]))
+Indel <- Indel[,-18]
+Indel$Sample <- rownames(Indel)
+
+Indel2 <- gather(Indel, key = 'Indel', value = 'Count', -Sample)
+Indel2 = Indel2[Indel2$Indel %in% c('CDS','synonymous_SNP','missense_SNP','intronic','intergenic'),]
+
+Sort <- Indel2[Indel2$Sample=='MB49LOY',]
+Sort <- Sort[order(Sort$Count),'Indel']
+Indel2 <- Indel2[Indel2$Sample %in% c('MB49R_C','MB49LOY'),]
+Indel2$Indel <- factor(Indel2$Indel,levels=Sort)
+Indel2$Sample <- factor(Indel2$Sample, levels=c('MB49R_C','MB49LOY'))
+
+colors <-c( '#C2A5CF','#96C5E2', '#BAE4BC','#FEE08B','#F7945D')
+p<-ggplot(Indel2, aes(fill=Indel, y=Count, x=Sample, color=Indel)) + 
+    geom_bar(position="stack", stat="identity",width=0.6,linewidth=0.75)+guides(fill = guide_legend(ncol = 1))+
+    scale_y_continuous(expand = expansion(mult = 0)) +
+    scale_fill_manual(values=colors)+
+    coord_cartesian(ylim=c(0,40000))+
+    scale_color_manual(values=c('#9467BD','#2B8CBE','#5C8D84','#BF812D','#B96F46'))+
+    theme_classic()
+pdf(paste0("Snp_summary_stacked_bar.pdf"), width = 3.5, height = 2.5)
+print(p)
+dev.off()
+
+```
+
+
+```{r}
+LOY <- read.table('CRISPR_Y-KO_indel.annovar.mm39_multianno.xls', sep='\t', header=T)
+WTY <- read.table('CRISPR_Y-Scr_indel.annovar.mm39_multianno.xls', sep='\t', header=T)
+CountLOY_Indel <- data.frame(table(LOY$CHROM))
+colnames(CountLOY_Indel) <- c('Chr', 'MB49_YKO')
+CountWTY_Indel <- data.frame(table(WTY$CHROM))
+colnames(CountWTY_Indel) <- c('Chr', 'MB49_Yscr')
+
+
+LOY <- read.table('CRISPR_Y-KO_snp.annovar.mm39_multianno.xls/MB49LOY.GATK.snp.annovar.mm39_multianno.xls', sep='\t', header=T)
+WTY <- read.table('CRISPR_Y-Scr_snp.annovar.mm39_multianno.xls/MB49R_C.GATK.snp.annovar.mm39_multianno.xls', sep='\t', header=T)
+CountLOY_Snp <- data.frame(table(LOY$CHROM))
+colnames(CountLOY_Snp) <- c('Chr', 'MB49_YKO')
+CountWTY_Snp <- data.frame(table(WTY$CHROM))
+colnames(CountWTY_Snp) <- c('Chr', 'MB49_Yscr')
+
+CountLOY_Snp <- CountLOY_Snp[!(CountLOY_Snp$Chr %in% c('chrY','chrM')), ]
+CountWTY_Snp <- CountWTY_Snp[!(CountWTY_Snp$Chr %in% c('chrY','chrM')), ]
+CountLOY_Indel <- CountLOY_Indel[!(CountLOY_Indel$Chr %in% c('chrY','chrM')), ]
+CountWTY_Indel <- CountWTY_Indel[!(CountWTY_Indel$Chr %in% c('chrY','chrM')), ]
+
+CountLOY <- CountLOY_Snp
+CountLOY$MB49_YKO <- CountLOY$MB49_YKO + CountLOY_Indel$MB49_YKO 
+CountWTY <- CountWTY_Snp
+CountWTY$MB49_Yscr <- CountWTY$MB49_Yscr + CountWTY_Indel$MB49_Yscr
+
+Count <- merge.data.frame(CountLOY,CountWTY,by='Chr')
+Count$rate <- Count$MB49_YKO/Count$MB49_Yscr
+
+Count$Chr <-factor(Count$Chr, levels = c('chr1','chr2','chr3','chr4','chr5','chr6','chr7','chr8','chr9','chr10','chr11','chr12','chr13','chr14','chr15','chr16','chr17','chr18','chr19','chrX'))
+
+p<-ggplot(Count[!(Count$Chr %in% c('chrY','chrM')), ], aes(x=Chr, y=rate)) + 
+    geom_bar(stat='summary',fun='mean',fill='#96C5E2')+
+    scale_y_continuous(expand = expansion(mult = 0)) +
+    geom_hline(aes(yintercept=1),color="darkgrey",linetype="dashed")+
+    scale_fill_manual(values=colors)+
+    theme_classic()+labs(x = "SNP&INDEL", y='Ratio of Counts (Y-KO/Y-Scr)')+
+  coord_cartesian(ylim=c(0.9,1.2))+
+  theme(axis.text.x = element_text(vjust=0.7,size=9,angle=90))
+pdf(paste0("Snp&Indel_per_chr_rate.pdf"), width = 5.5, height = 3) 
+print(p)
+dev.off()
+```
+

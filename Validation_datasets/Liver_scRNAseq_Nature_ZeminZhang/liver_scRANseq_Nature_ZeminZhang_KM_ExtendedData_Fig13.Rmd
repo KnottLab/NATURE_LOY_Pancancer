@@ -1,0 +1,181 @@
+---
+title: "liver_scRANseq_Nature_ZeminZhang_KM_ExtendedData_Fig12"
+output: html_document
+date: "2025-02-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)
+library(ggplot2)
+library(ggpubr)
+library(survival)
+library(survminer)
+library(plyr)
+library(dplyr)
+library(tibble)
+library(gridExtra)
+library(tidyr)
+```
+
+```{r}
+data <- read.csv('/Users/sheny2/Downloads/Submission/Reviewing_files/LOY_validation/scRNAseq_with_survival/Nature_liver_Zhang/Nature_liver_Zhang_LOY_pct_in_groups.csv')
+meta <- as.data.frame(read_excel('/Users/sheny2/Downloads/Submission/Reviewing_files/LOY_validation/scRNAseq_with_survival/Nature_liver_Zhang/clinic_info.xlsx'))
+# Keep only tumor sample
+data <- data[!duplicated(data$Sample.1),]
+#1: dead 0: censor
+data['OS'] <- 1-data['OS']
+rownames(meta) <- meta$Patient
+Signatures <- c('CD4T_LOY_SCR','CD8T_LOY_SCR','Tumor_LOY_SCR')
+```
+
+```{r cutoff calculation}
+risks <- data.frame(matrix(nrow=nrow(data),ncol=0))
+rownames(risks) <- data$Sample #samples x signatures
+
+for(sig in  Signatures){
+  rt <- data[, c(sig, 'OS_time','OS','Sample') ]
+  colnames(rt) <- c(sig, "Surv_TIME", "Surv_STATUS",'Sample')
+  rt <- na.omit(rt)
+  
+  res.cut <- surv_cutpoint(rt, 
+                           time = "Surv_TIME", 
+                           event = "Surv_STATUS", 
+                           variables = sig, 
+                           minprop = 0.3)
+  
+  categorize <- surv_categorize(res.cut)
+  risks[rt$Sample,paste0(sig,'_risk')] <- categorize[, 3]
+  rt$risk <- categorize[, 3]
+}
+risks$X <- rownames(risks)
+```
+
+```{r}
+dir.create("surv_individual_in_group")
+for (sig in  Signatures) {
+  #sig <- 'Tumor_LOY_SCR'
+  rt <- data[, c('Sample', 'OS_time','OS') ]
+  colnames(rt) <- c('Sample', "Surv_TIME", "Surv_STATUS")
+  sub_risk <- risks[,c('X',paste0(sig,'_risk'))]
+  colnames(sub_risk) <- c('Sample','risk')
+  rt <- merge(rt, sub_risk, by = "Sample")
+  rt <- na.omit(rt)
+  
+  rt$risk <- factor(rt$risk, levels=c('low','high'))
+  
+  fit <- survfit(Surv(Surv_TIME, Surv_STATUS) ~ risk, data = rt)
+  
+  res.cox <- coxph(Surv(Surv_TIME, Surv_STATUS) ~ risk, data = rt)
+  res.cox <- summary(res.cox)
+  p.val <- res.cox$coefficients[5]
+  HR <- res.cox$conf.int[1]
+  up95 <- res.cox$conf.int[4]
+  low95 <- res.cox$conf.int[3]
+  
+  HR <- paste("Hazard Ratio = ", round(HR, 2), sep = "")
+  CI <- paste("95% CI: ", paste(round(low95, 2), round(up95, 2), sep = " - "), sep = "")
+  
+  p <- ggsurvplot(fit, data = rt, 
+                  pval = paste(ifelse(p.val < 0.0001, "P < 0.0001", paste("P = ", round(p.val, 4))), sig, HR, CI, sep="\n"),
+                  pval.size = 8, pval.coord = c(0, 0.2),
+                  conf.int = FALSE,
+                  censor = TRUE,
+                  palette = c("#40548A","#DD492E"),
+                  font.legend = 16,
+                  risk.table = TRUE,
+                  legend = c(0.8, 0.9),
+                  font.title = 14,
+                  font.x = c(14, "bold.italic", "red"),
+                  font.y = c(14, "bold.italic", "red")
+  ) + labs(x = "Months",y='OS') #Select units
+  
+  pdf(paste0("surv_individual_in_group/",sig,".pdf"), width = 5, height = 6, onefile=F)
+  print(p)
+  dev.off()
+}
+
+```
+
+
+```{r}
+dir.create("surv_combined_in_group")
+
+sig1s <- c("Tumor_LOY_SCR", "Tumor_LOY_SCR")
+sig2s <- c("CD4T_LOY_SCR", "CD8T_LOY_SCR")
+
+
+for(i in seq(1,length(sig1s))){
+  sig1 <- sig1s[i]
+  sig2 <- sig2s[i]
+  dat <- data[, c('Sample','OS_time','OS') ]
+  colnames(dat) <- c('Sample', "Surv_TIME", "Surv_STATUS")
+  sub_risk <- risks[,c('X',paste0(sig1,'_risk'),paste0(sig2,'_risk'))]
+  colnames(sub_risk) <- c('Sample',sig1,sig2)
+  dat <- merge(dat, sub_risk, by = "Sample")
+  dat <- na.omit(dat)
+  
+  #Get group
+  dat[,sig1] <- ifelse(dat[,sig1]=='low',0,1)
+  dat[,sig2] <- ifelse(dat[,sig2]=='low',0,1)
+  dat$group <- 2*dat[,sig1]+dat[,sig2] #0:LowLow,1:LowHigh,2:HighLow,3:HighHigh
+  dat$group <- as.factor(dat$group)
+  dat$group <- mapvalues(dat$group, from=c(0,1,2,3),
+                         to=c(paste0('Low&Low'), paste0('Low&High'),
+                              paste0('High&Low'), paste0('High&High')))
+  #Survival analysis - log rank test for all groups
+  fitd <- survdiff(Surv(Surv_TIME, Surv_STATUS) ~ group, data = dat, na.action = na.exclude)
+  p.val <- 1 - pchisq(fitd$chisq, length(fitd$n) - 1)
+  fit <- survfit(Surv(Surv_TIME, Surv_STATUS) ~ group, data = dat, type = "kaplan-meier",
+                 error = "greenwood", conf.type = "plain", na.action = na.exclude)
+  # Pairwise survival analysis
+  ps <- pairwise_survdiff(Surv(Surv_TIME, Surv_STATUS) ~ group, data = dat, p.adjust.method = "none") 
+  # Set colors
+  mycol <- c( "#67a9cf","#2166ac", "#ef8a62","#b2182b")
+  # Create KM plot
+  names(fit$strata) <- gsub("group=", "", names(fit$strata))
+  p <- ggsurvplot(fit = fit,
+                  conf.int = FALSE,
+                  risk.table = TRUE,
+                  risk.table.col = "strata",
+                  palette = mycol,
+                  data = dat,
+                  size = 1,
+                  break.time.by = 5,
+                  legend.title = "",
+                  xlab = "Time (Months)",
+                  ylab = "Survival Probability",
+                  risk.table.y.text = FALSE,
+                  tables.height = 0.3)
+  # Add overall p-value
+  p.lab <- paste0("log-rank test P",
+                  ifelse(p.val < 0.0001, " < 0.0001", paste0(" = ", round(p.val, 4))))
+  p$plot <- p$plot + annotate("text",x = 0, y = 0.05,hjust = 0,fontface = 4,label = p.lab)
+  # Add pairwise table
+  addTab <- as.data.frame(ifelse(round(ps$p.value, 4) < 0.0001, "<0.0001", round(ps$p.value, 4)))
+  addTab[is.na(addTab)] <- "-"
+  xma = 10
+  xmi=5
+  yma=0.5
+  ymi=0.1
+  t1<-ttheme_default(base_size = 4)
+  p$plot <- p$plot +
+    annotation_custom(grob = tableGrob(addTab,rows = rownames(addTab),theme=t1),xmin=xmi,xmax=xma,
+                      ymin=ymi,ymax=yma)
+  
+  #Add tittle
+  p$plot <- p$plot +
+    ggtitle(paste0('Sig1=',sig1,'\nSig2=',sig2))
+  #Adjust legend
+  p$plot <- p$plot + theme(legend.key.size = unit(7,'pt'),legend.text = element_text(size=5))
+  # Generate the plot
+  pdf(paste0('surv_combined_in_group/',sig1,'_&_',sig2,"_km_curve_with_pairwise_logrank.pdf"), 
+      width = 4, height = 6,onefile=F)
+  print(p)
+  dev.off()
+}
+```
+

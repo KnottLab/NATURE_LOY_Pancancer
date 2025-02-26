@@ -1,0 +1,92 @@
+---
+title: "GSE255165_WES_RNAseq_preocessing_and_plotting"
+output: html_document
+date: "2025-02-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+Meta <- data.frame(read_excel('GSE255165_clinical_data.xlsx'))
+rownames(Meta) <- Meta$Patient.number
+```
+
+
+```{r bulk-RNAseq YchrS calculation}
+Meta <- data.frame(read_excel('GSE255165_clinical_data.xlsx'))
+rownames(Meta) <- Meta$Patient.number
+
+Expr <- read.csv('GSE255163_RNAseq_TPM.csv')
+Expr <- Expr[!duplicated(Expr$X),]
+rownames(Expr) <- Expr$X
+Expr<-Expr[,-1]
+YchrS = list('Ychr'=c('DDX3Y', 'UTY', 'KDM5D', 'USP9Y', 'ZFY', 'RPS4Y1', 'TMSB4Y', 'EIF1AY', 'NLGN4Y'))
+
+gsvaPar <- gsvaParam(as.matrix(Expr), YchrS)
+tcga_gsva2 <- gsva(gsvaPar)
+tcga_gsva2 <- as.data.frame(t(tcga_gsva2))
+
+tcga_gsva2$patient <- substr(rownames(tcga_gsva2),1,4)
+tcga_gsva2$loc <- substr(rownames(tcga_gsva2),5,nchar(rownames(tcga_gsva2)))
+rownames(tcga_gsva2) <- paste0(tcga_gsva2$patient, '_', tcga_gsva2$loc)
+```
+
+```{r WES data - chr meanCNV calculation}
+files <- list.files(path='GSE255165_RAW',pattern='*.txt.gz')
+
+Score_Cal <- function(CNSegment){
+  return(sum((2^CNSegment$log2)*CNSegment$weight)/sum(CNSegment$weight))
+}
+Chr_scores <- data.frame()
+for(f in files){
+  data <- read.table(f,header=T)
+  sample <- substr(f,nchar('GSM8065089_')+1,nchar(f)-nchar('.cns.txt.gz'))
+  
+  data[data$chromosome=='chrY' & data$end<=2781479,'chromosome'] <-'chrParY' #PAR#1 10001-2781479
+  data[data$chromosome=='chrY' & data$start>=56887903,'chromosome'] <-'chrParY' #PAR#2 56887903 - 57217415
+  chr_s<-data.frame(tapply(data,data$chromosome,Score_Cal))
+  colnames(chr_s) <- c(sample)
+  chr_s<-data.frame(t(chr_s))
+  Chr_scores <- bind_rows(Chr_scores,chr_s)
+}
+Chr_scores$patient <- substr(rownames(Chr_scores),1,4)
+Chr_scores$sex <- Meta[Chr_scores$patient,'Gender']
+
+Chr_scores$YchrS <- tcga_gsva2[rownames(Chr_scores),'Ychr']
+```
+
+```{r}
+write.csv(Chr_scores,'GSE255165_WESChrscores_RNAYchrS.csv')
+```
+
+```{r ExtendedData Fig4g}
+data <- read.csv('GSE255165_3_method_combine.csv')
+data<-na.omit(data)
+data$Patient <-substr(data$Patient_Sample,1,4) 
+data$Sex <- Meta[data$Patient,'Gender']
+
+p<-ggscatter(data, x = 'YchrS', y ='LOY_SCR', size=1,color='Sex',
+             add = "reg.line", conf.int = TRUE, palette = c('Male'='#AEC7E8','Female'='#FF9896'),
+             cor.coef = TRUE, cor.method = "pearson")
+pdf('GSE255165_YchrSvsLOY_SCR_scatter.pdf',3,3)
+print(p)
+dev.off()
+
+p<-ggscatter(data, x = 'YchrS', y ='chrY', size=1,color='Sex',
+             add = "reg.line", conf.int = TRUE, palette = c('Male'='#AEC7E8','Female'='#FF9896'),
+             cor.coef = TRUE, cor.method = "pearson")
+pdf('GSE255165_YchrSvsDNAY_scatter.pdf',3,3)
+print(p)
+dev.off()
+
+p<-ggscatter(data, x = 'LOY_SCR', y ='chrY', size=1,color='Sex',
+             add = "reg.line", conf.int = TRUE, palette = c('Male'='#AEC7E8','Female'='#FF9896'),
+             cor.coef = TRUE, cor.method = "pearson")
+pdf('GSE255165_LOY_SCRvsDNAY_scatter.pdf',3,3)
+print(p)
+dev.off()
+
+```
+
