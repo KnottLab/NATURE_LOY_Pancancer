@@ -1,0 +1,362 @@
+---
+title: "Survival_analysis_for_celltypeLOY_signatures_Fig6"
+output: html_document
+date: "2024-06-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(GSVA)
+library(readxl)
+library(ggplot2)
+library(ggpubr)
+library(survival)
+library(survminer)
+library(plyr)
+library(dplyr)
+library(gridExtra)
+library(tibble)
+```
+
+
+```{r generate_gene_list}
+getgenelist<-function(genegrid_file){
+  genegrid = read.table(genegrid_file,header=TRUE, sep=',',row.names=1)
+  CelltypeLOY = list()
+  for (col in colnames(genegrid)){
+    genelist = list(elem = rownames(genegrid)[genegrid[col]=='True'])
+    print(paste0(col,':',length(genelist$elem)))
+    if(length(genelist$elem)<50) print(genelist$elem)
+    if(length(genelist$elem)>0) {
+      names(genelist) = col
+      CelltypeLOY = append(CelltypeLOY, genelist)}
+  }
+  return(CelltypeLOY)
+}
+genegrid_file <- 'LOY_Celltype_signature_genegrid.csv'
+CelltypeLOY <- getgenelist(genegrid_file)
+```
+
+```{r calculate_signatures(ssgsea)}
+expr_LOY <- read.table('expr_LOY_allgenes_FPKM.txt')
+gsvaPar <- gsvaParam(as.matrix(expr_LOY), CelltypeLOY)
+tcga_gsva2 <- gsva(gsvaPar)
+tcga_gsva2 <- as.data.frame(t(tcga_gsva2))
+tcga_gsva2$Sample <- substr(rownames(tcga_gsva2),1,nchar(rownames(tcga_gsva2))-3)
+```
+
+```{r save_scores}
+write.csv(tcga_gsva2,'ExtendedData_Table10_CelltypeLOY_Scores.csv')
+```
+
+
+```{r get_clinical_info}
+meta <- read_xlsx('Extended Data Table 1.xlsx')
+surv_meta <- read.csv('Extended Data Table 2.csv') 
+#Survival Time >15 years (5475 days) is marked as censoring on the 15th year to help better focusing on the 15-year survival
+tcga_gsva2 <- read.csv('ExtendedData_Table10_CelltypeLOY_Scores2_shortened_lfc_1.csv')
+```
+
+```{r combine_data}
+meta <- merge(meta, surv_meta, by = "Sample")
+merged_data <- merge(tcga_gsva2, meta, by = "Sample")
+merged_data
+```
+
+```{r}
+sig_name <- 'CelltypeLOY_lfc-20%_shortened_lfc_1'
+surv_type <- c('OS','DSS')
+Signatures <- names(CelltypeLOY)
+```
+
+```{r get_cutoffs_for_each_signature}
+cutoffs <- as.data.frame(matrix(nrow = length(Signatures), ncol = length(surv_type)))
+rownames(cutoffs) = Signatures
+colnames(cutoffs) = surv_type
+
+for(s in surv_type){
+  risks <- data.frame(matrix(nrow=nrow(merged_data),ncol=0))
+  rownames(risks) <- merged_data$Sample #samples x signatures
+  
+  for(sig in  Signatures){
+    rt <- merged_data[, c(sig, paste0(s,'.time'),s,'Sample') ]
+    colnames(rt) <- c(sig, "Surv_TIME", "Surv_STATUS",'Sample')
+    rt <- na.omit(rt)
+    
+    res.cut <- surv_cutpoint(rt, 
+                             time = "Surv_TIME", 
+                             event = "Surv_STATUS", 
+                             variables = sig, 
+                             minprop = 0.3)
+    
+    categorize <- surv_categorize(res.cut)
+    risks[rt$Sample,paste0(sig,'_risk')] <- categorize[, 3]
+    rt$risk <- categorize[, 3]
+    
+    cutoffs[sig,s] <- sort(rt[,sig])[sum(rt$risk == "low")]
+  }
+  
+  write.csv(risks, paste0(s,'_risks_for_',sig,'_Sig_4127TCGAsamp.csv'),row.names=T)
+}
+write.csv(cutoffs,paste0('cuttoffs_for_',sig,'_Sig_4127TCGAsamp.csv'),row.names=T)
+
+```
+
+```{r separate KM plots Fig6f ExtendedData Fig12a}
+dir.create("surv_individual")
+for(s in surv_type){
+  dir.create(file.path("surv_individual",s))
+  risks = read.csv(paste0(s,'_risks_for_',sig_name,'_Sig_4127TCGAsamp.csv'),header=T)
+  for (sig in  Signatures) {
+    rt <- merged_data[, c('Sample',paste0(s,'.time'),s) ]
+    colnames(rt) <- c('Sample', "Surv_TIME", "Surv_STATUS")
+    sub_risk <- risks[,c('X',paste0(sig,'_risk'))]
+    colnames(sub_risk) <- c('Sample','risk')
+    rt <- merge(rt, sub_risk, by = "Sample")
+    
+    rt <- na.omit(rt)
+    rt$risk <- factor(rt$risk, levels=c('low','high'))
+    #Transform to year
+    rt$Surv_TIME <- rt$Surv_TIME/365
+    
+    fit <- survfit(Surv(Surv_TIME, Surv_STATUS) ~ risk, data = rt)
+    res.cox <- coxph(Surv(Surv_TIME, Surv_STATUS) ~ risk, data = rt)
+    res.cox <- summary(res.cox)
+    p.val <- res.cox$coefficients[5]
+    HR <- res.cox$conf.int[1]
+    up95 <- res.cox$conf.int[4]
+    low95 <- res.cox$conf.int[3]
+    
+    HR <- paste("Hazard Ratio = ", round(HR, 2), sep = "")
+    CI <- paste("95% CI: ", paste(round(low95, 2), round(up95, 2), sep = " - "), sep = "")
+    
+    p <- ggsurvplot(fit, data = rt, 
+                    pval = paste(ifelse(p.val < 0.0001, "P < 0.0001", paste("P = ", round(p.val, 4))), sig, HR, CI, sep="\n"),
+                    pval.size = 8, pval.coord = c(0, 0.2),
+                    conf.int = FALSE,
+                    censor = TRUE,
+                    palette = c("#40548A","#DD492E"),
+                    font.legend = 16,
+                    risk.table = TRUE,
+                    legend = c(0.8, 0.9),
+                    font.title = 14,
+                    font.x = c(14, "bold.italic", "red"),
+                    font.y = c(14, "bold.italic", "red")
+    ) + labs(x = "Years",y=s) #Select units
+    
+    pdf(paste0("surv_individual/",s,'/',sig, '_',s,".pdf"), width = 5, height = 6, onefile=F)
+    print(p)
+    dev.off()
+  }
+}
+
+```
+
+```{r combined KM plots Fig6g}
+sig1s <- c("Epithelium_LOY_SCR", "Epithelium_LOY_SCR")
+sig2s <- c("CD4._T_cell_LOY_SCR", "CD8._T_cell_LOY_SCR")
+
+dir.create('Combined_surv')
+for(s in surv_type){
+  dir.create(paste0('Combined_surv/',s))
+  risks = read.csv(paste0(s,'_risks_for_',sig_name,'_Sig_4127TCGAsamp.csv'),header=T)
+  for(i in seq(1,length(sig1s)))
+  {
+      sig1 <- sig1s[i]
+      sig2 <- sig2s[i]
+      dat <- merged_data[, c('Sample',paste0(s,'.time'),s) ]
+      colnames(dat) <- c('Sample', "Surv_TIME", "Surv_STATUS")
+      sub_risk <- risks[,c('X',paste0(sig1,'_risk'),paste0(sig2,'_risk'))]
+      colnames(sub_risk) <- c('Sample',sig1,sig2)
+      dat <- merge(dat, sub_risk, by = "Sample")
+      dat <- na.omit(dat)
+      
+      #Get group
+      dat[,sig1] <- ifelse(dat[,sig1]=='low',0,1)
+      dat[,sig2] <- ifelse(dat[,sig2]=='low',0,1)
+      dat$group <- 2*dat[,sig1]+dat[,sig2] #0:LowLow,1:LowHigh,2:HighLow,3:HighHigh
+      dat$group <- as.factor(dat$group)
+      dat$group <- mapvalues(dat$group, from=c(0,1,2,3),
+                             to=c(paste0('Low&Low'), paste0('Low&High'),
+                                  paste0('High&Low'), paste0('High&High')))
+      
+      #Transform to year
+      dat$Surv_TIME <- dat$Surv_TIME/365
+      
+      #Survival analysis - log rank test for all groups
+      fitd <- survdiff(Surv(Surv_TIME, Surv_STATUS) ~ group, data = dat, na.action = na.exclude)
+      p.val <- 1 - pchisq(fitd$chisq, length(fitd$n) - 1)
+      fit <- survfit(Surv(Surv_TIME, Surv_STATUS) ~ group, data = dat, type = "kaplan-meier",
+                     error = "greenwood", conf.type = "plain", na.action = na.exclude)
+      
+      # Pairwise survival analysis
+      ps <- pairwise_survdiff(Surv(Surv_TIME, Surv_STATUS) ~ group, data = dat, p.adjust.method = "none") 
+      
+      # Set colors
+      mycol <- c( "#67a9cf","#2166ac", "#ef8a62","#b2182b")
+      
+      # Create KM plot
+      names(fit$strata) <- gsub("group=", "", names(fit$strata))
+      p <- ggsurvplot(fit = fit,
+                      conf.int = FALSE,
+                      risk.table = TRUE,
+                      risk.table.col = "strata",
+                      palette = mycol,
+                      data = dat,
+                      size = 1,
+                      break.time.by = 5,
+                      legend.title = "",
+                      xlab = "Time (Years)",
+                      ylab = s,
+                      risk.table.y.text = FALSE,
+                      tables.height = 0.3)
+      
+      # Add overall p-value
+      p.lab <- paste0("log-rank test P",
+                      ifelse(p.val < 0.0001, " < 0.0001", paste0(" = ", round(p.val, 4))))
+      p$plot <- p$plot + annotate("text",x = 0, y = 0.05,hjust = 0,fontface = 4,label = p.lab)
+      
+      # Add pairwise table
+      addTab <- as.data.frame(ifelse(round(ps$p.value, 4) < 0.0001, "<0.0001", round(ps$p.value, 4)))
+      addTab[is.na(addTab)] <- "-"
+      
+      if(s=='DSS') {xma=5;xmi=1
+        }else {
+          xma = 12;xmi=8
+        }
+      if(s=='DSS'){yma=0.4;ymi=0.2
+      }else {yma=1;ymi=0.8
+      }
+      
+      t1<-ttheme_default(base_size = 4)
+      p$plot <- p$plot +
+        annotation_custom(grob = tableGrob(addTab,rows = rownames(addTab),theme=t1),xmin=xmi,xmax=xma,
+                          ymin=ymi,ymax=yma)
+      
+      p$plot <- p$plot +
+        ggtitle(paste0('Sig1=',sig1,'\nSig2=',sig2))
+      p$plot <- p$plot + theme(legend.key.size = unit(7,'pt'),legend.text = element_text(size=5))
+      pdf(paste0('Combined_surv/',s,'/',s,'_',sig1,'_&_',sig2,"_km_curve_with_pairwise_logrank.pdf"), 
+          width = 4, height = 6,onefile=F)
+      print(p)
+      dev.off()
+  }
+}
+```
+
+```{r Remove samples <20-year-old}
+merged_data2 <- merged_data[(!is.na(merged_data$Age)) & (merged_data$Age>=20),]
+```
+
+```{r categorize LOY epithelium}
+cutoff <- read.csv(paste0('cuttoffs_for_',sig_name,'_Sig_4127TCGAsamp.csv'))
+merged_data2$Age_seg <-factor(merged_data2$Age_seg, levels = c("20-39","40-59","60-79",">79"))
+merged_data2$EpiLOY_cat <- cut(merged_data2$Epithelium_LOY_SCR,breaks = c(-Inf,cutoff[5,2],Inf),
+                                              labels=c("low_EpiLOY","high_EpiLOY"))
+merged_data2$CD8LOY_cat <- cut(merged_data2$CD8._T_cell_LOY_SCR,breaks = c(-Inf,cutoff[3,2],Inf),
+                                              labels=c("low_CD8LOY","high_CD8LOY"))
+merged_data2$CD4LOY_cat <- cut(merged_data2$CD4._T_cell_LOY_SCR,breaks = c(-Inf,cutoff[1,2],Inf),
+                                              labels=c("low_CD4LOY","high_CD4LOY"))
+```
+
+```{r multicox}
+res.cox <- coxph(Surv(OS.time, OS)~Age+EpiLOY_cat+CD4LOY_cat+CD8LOY_cat,data = merged_data2)
+res.cox <- summary(res.cox)
+```
+
+```{r model_validation}
+res.cox2 <- coxph(Surv(OS.time, OS)~Age+EpiLOY_cat+CD4LOY_cat+CD8LOY_cat,data = merged_data2)
+#test for the proportional-hazards (PH) assumption,
+test.ph <- cox.zph(res.cox2)
+#test for the proportional-hazards (PH) assumption,
+ggcoxzph(test.ph, font.main = 10,font.y=10)
+```
+
+```{r test influential observations1}
+#test influential observations
+ggcoxdiagnostics(res.cox2, type = "dfbeta",
+                 linear.predictions = FALSE, ggtheme = theme_bw())
+```
+
+```{r test influential observations2}
+#test influential observations
+ggcoxdiagnostics(res.cox2, type = "deviance",
+                 linear.predictions = FALSE, ggtheme = theme_bw())
+```
+
+```{r save results}
+vars <-rownames(res.cox$coefficients)
+multicox <- data.frame(cbind(res.cox$coefficients[vars,],res.cox$conf.int[vars,c(3,4)]))
+colnames(multicox) <- c('coef','exp_coef','se_coef','z','P-val','lower_95','upper_95')
+
+hrtable <- multicox[,c( "exp_coef", "P-val", "lower_95", "upper_95")]
+is_character <- sapply(hrtable, is.character)
+tabletext <- cbind(c("Signatures",rownames(hrtable)),
+                   c("p value",ifelse(round(as.numeric(hrtable$`P-val`),2) < 0.01,"<0.01",round(as.numeric(hrtable$'P-val'),2))),
+                   c("HR (95L-95H)",paste0(round(as.numeric(hrtable$'exp_coef'),2), " (",
+                                               round(as.numeric(hrtable$lower_95),2)," - ",
+                                               round(as.numeric(hrtable$upper_95),2),")")))
+
+write.csv(tabletext, 'Table2_scRNAseq_signature_coxPH_model.csv')
+```
+
+```{r nomogram Fig6h}
+library(regplot)
+res.cox <- coxph(Surv(OS.time, OS)~Age+EpiLOY_cat+CD4LOY_cat+CD8LOY_cat,data = merged_data2)
+days <- c(2*365,5*365,8*365)
+p<-regplot(res.cox,
+        points=TRUE,
+        observation=merged_data2[2,], 
+        failtime = days, 
+        prfail = TRUE, 
+        showP = T, 
+        droplines = T,
+        rank="range", 
+        interval="confidence")
+```
+
+
+```{r calibration curve ExtendedData Fig12d}
+library(rms)
+cals <- c() 
+for (day in days){
+  f<-cph(formula = Surv(OS.time,OS) ~  Age+EpiLOY_cat+CD4LOY_cat+CD8LOY_cat,data = merged_data2,
+         x=T,y=T,surv = T,na.action=na.delete,time.inc = day) 
+  cal<-calibrate(f, cmethod="KM", method="boot",u=day,m=500,B=1000)
+  cals <- append(cals,list(cal))
+}
+
+```
+
+```{r calibration curve  ExtendedData Fig12d}
+cols <- c('#729ECE','#67BF5C','#ED665D')
+Year = c(2,5,8)
+for(i in seq(1,length(days))){
+  
+  pdf(paste0('Calibration_curv_',Year[i],'YEAR.pdf'),4,4.5)
+  plot(cals[[i]],
+       lwd = 2,
+       lty = 0,
+       errbar.col = c(cols[i]),
+       xlim = c(0,1),ylim= c(0,1),#limdn[i],limup[i]
+       xlab = "Nomogram-prediced OS (%)",ylab = "Observed OS (%)",
+       col = c(cols[i]),
+       cex.lab=1.2,cex.axis=1, cex.main=1.2, cex.sub=0.6,main=paste0(Year[i],' Years'))
+  lines(cals[[i]][,c('mean.predicted',"KM")],
+        type='b',
+        lwd = 2,
+        col = c(cols[i]),
+        pch = 16)
+  mtext("")
+  box(lwd = 1)
+  abline(0,1,lty= 3,
+         lwd = 2,
+         col =c("#224444"))
+  dev.off()
+}
+
+```
+
